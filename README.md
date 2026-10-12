@@ -16,15 +16,23 @@ Buka `http://localhost:3000`. Untuk menghentikan aplikasi, tekan `Ctrl+C`; atau 
 
 Pindahkan folder source aplikasi ke laptop tujuan. Saat menyalin, jangan sertakan `data/bookings.json` kecuali riwayat transaksi lama memang ingin dipindahkan. Docker tidak memasukkan file itu ke image; aplikasi menyimpan data laptop tujuan di folder `data`.
 
-### Tanpa Docker (Linux/macOS)
+### Tanpa Docker (Windows, macOS, atau Linux)
 
-Perlu Rust/Cargo terpasang:
+Pasang Git dan Rust/Cargo terlebih dahulu. Setelah clone repository, jalankan dari folder aplikasi:
+
+```bash
+cargo run --release
+```
+
+Build pertama perlu koneksi internet untuk mengunduh dependency dan bisa memakan waktu beberapa menit. Setelah muncul pesan aplikasi berjalan, buka `http://localhost:3000`. Hentikan dengan `Ctrl+C`. Data disimpan di `data/bookings.json` dan folder `data` akan dibuat otomatis.
+
+Cara khusus Linux/macOS:
 
 ```bash
 ./start.sh
 ```
 
-Buka `http://localhost:3000`. Data disimpan di `data/bookings.json`. Untuk menghentikan aplikasi:
+Buka `http://localhost:3000`. Untuk menghentikan aplikasi:
 
 ```bash
 ./stop.sh
@@ -41,7 +49,7 @@ export GOOGLE_BOOKING_SHEET="peminjaman"
 export GOOGLE_RETURN_SHEET="pengembalian"
 ```
 
-Jalankan `npm start` setelah mengatur variabel untuk mode tanpa Docker, atau `docker compose up --build` untuk Docker. Jangan masukkan URL deployment, ID spreadsheet, atau kredensial ke source publik. Buat dua tab bernama `peminjaman` dan `pengembalian`. Sheet `peminjaman` menerima waktu transaksi, kendaraan, nama, jam peminjaman, keterangan, dan status. Sheet `pengembalian` menerima waktu transaksi, kendaraan, nama pengembali, jam pengembalian, pengisian bensin, dan keterangan.
+Untuk mode tanpa Docker, atur variabel sebelum menjalankan `cargo run --release`; untuk Docker, masukkan nilainya ke file `.env` lokal lalu jalankan `docker compose up --build`. Jangan commit URL deployment, ID spreadsheet, atau kredensial ke repository publik. Buat dua tab bernama `peminjaman` dan `pengembalian`. Sheet `peminjaman` menerima waktu transaksi, kendaraan, nama, jam peminjaman, keterangan, dan status. Sheet `pengembalian` menerima waktu transaksi, kendaraan, nama pengembali, jam pengembalian, pengisian bensin, dan keterangan.
 
 Alternatifnya, integrasi Google Sheets API langsung tetap didukung melalui `GOOGLE_SPREADSHEET_ID` dan `GOOGLE_SERVICE_ACCOUNT_JSON`.
 
