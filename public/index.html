@@ -3,98 +3,52 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Catatan Keuangan</title>
-  <link rel="stylesheet" href="/styles.css?v=remove-transaction-history-1">
+  <meta name="theme-color" content="#f3f7fb">
+  <title>Peminjaman Kendaraan Dinas | KPP Pratama Ternate</title>
+  <link rel="stylesheet" href="/styles.css?v=fleet-1">
 </head>
 <body>
-  <div class="page-shell">
+  <main class="page-shell">
     <header class="topbar">
-      <div>
-        <p class="eyebrow">FINANCE TRACKER</p>
-        <h1>Catatan Keuangan</h1>
+      <div class="brand">
+        <div class="brand-icon" aria-hidden="true">🚘</div>
+        <div>
+          <p class="eyebrow">KPP PRATAMA TERNATE</p>
+          <h1>Peminjaman Kendaraan</h1>
+          <p class="subtitle">Armada kendaraan dinas</p>
+        </div>
       </div>
-      <div class="topbar-actions">
-        <button id="exportCsv" class="ghost-button">Export CSV</button>
-        <button id="resetEntries" class="danger-button">Reset semua transaksi</button>
+      <div class="overview">
+        <div class="today"><span>Hari ini</span><strong id="today">Memuat tanggal...</strong></div>
+        <div class="availability"><span class="availability-dot"></span><strong id="availableCount">0</strong><span>kendaraan tersedia</span></div>
       </div>
     </header>
 
-    <main class="layout">
-      <section class="summary-panel">
-        <div class="summary-card income">
-          <span>Pemasukan</span>
-          <strong id="incomeTotal">Rp 0</strong>
-        </div>
-        <div class="summary-card expense">
-          <span>Pengeluaran</span>
-          <strong id="expenseTotal">Rp 0</strong>
-        </div>
-        <div class="summary-card balance">
-          <span>Saldo</span>
-          <strong id="balanceTotal">Rp 0</strong>
-        </div>
-      </section>
-
-      <section class="card daily-card">
-        <div class="card-head inline">
-          <div>
-            <h2>Rekap transaksi harian</h2>
-            <p id="dailyDateLabel" aria-live="polite">Tanggal mengikuti waktu WIT.</p>
-          </div>
-          <label class="daily-date-label" for="dailyDate">Tanggal
-            <input id="dailyDate" type="date">
-          </label>
-        </div>
-        <div class="daily-summary">
-          <div class="daily-total income"><span>Pemasukan</span><strong id="dailyIncome">Rp 0</strong></div>
-          <div class="daily-total expense"><span>Pengeluaran</span><strong id="dailyExpense">Rp 0</strong></div>
-          <div class="daily-total balance"><span>Saldo bersih</span><strong id="dailyBalance">Rp 0</strong></div>
-        </div>
-        <div id="dailyEntries" class="entries">
-          <div class="empty-state">Belum ada transaksi pada tanggal ini.</div>
-        </div>
-      </section>
-
-      <section class="content-grid">
-        <div class="card list-card">
-          <div class="card-head inline">
-            <h2>Rekap bulanan</h2>
-            <span id="monthLabel">Bulan ini</span>
-          </div>
-
-          <div id="categoryBreakdown" class="category-breakdown"></div>
-        </div>
-      </section>
-
-    </main>
-  </div>
-
-  <div id="botPanel" class="bot-panel" aria-hidden="true">
-    <div class="bot-trigger" id="botTrigger" aria-label="Buka form catatan transaksi">
-      <span>✦</span>
-    </div>
-    <div class="bot-form-card card">
-      <div class="chat-header">
-        <div class="chat-avatar">AI</div>
+    <section class="fleet-section" aria-labelledby="fleetTitle">
+      <div class="section-heading">
         <div>
-          <strong>Asisten Keuangan</strong>
-          <small>online</small>
+          <p class="eyebrow">ARMADA</p>
+          <h2 id="fleetTitle">Pilih kendaraan</h2>
+          <p class="section-description">Pilih kendaraan untuk mencatat peminjaman atau pengembaliannya.</p>
         </div>
+        <div class="legend"><span class="status available">Tersedia</span><span class="status booked">Dipinjam</span></div>
       </div>
+      <div id="fleet" class="fleet-grid" aria-live="polite"></div>
+    </section>
+    <footer>Data peminjaman disimpan pada perangkat ini.</footer>
+  </main>
 
-      <div id="chatThread" class="chat-thread">
-      </div>
-
-      <form id="entryForm" class="chat-form">
-        <label class="sr-only" for="chatInput">Pesan untuk asisten keuangan</label>
-        <input id="chatInput" name="message" type="text" autocomplete="off" placeholder="Contoh: makan siang 50rb" required>
-        <button type="submit" aria-label="Kirim pesan">➤</button>
-      </form>
-    </div>
+  <div id="backdrop" class="modal-backdrop" aria-hidden="true">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <button id="closeModal" class="modal-close" type="button" aria-label="Tutup">×</button>
+      <div id="modalContent"></div>
+    </section>
   </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-  <div id="toast" class="toast"></div>
-
-  <script src="/app.js?v=remove-transaction-history-1"></script>
+  <script type="module">
+    import init from "/pkg/kpp_fleet_frontend.js";
+    init();
+  </script>
 </body>
 </html>
