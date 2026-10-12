@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      PORT: "3000"
+      GOOGLE_APPS_SCRIPT_URL: ${GOOGLE_APPS_SCRIPT_URL:-}
+      GOOGLE_SPREADSHEET_ID: ${GOOGLE_SPREADSHEET_ID:-}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

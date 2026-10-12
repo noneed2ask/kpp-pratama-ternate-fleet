@@ -1,0 +1,5 @@
+/target/
+/frontend/target/
+/data/bookings.json
+/.env
+*.log

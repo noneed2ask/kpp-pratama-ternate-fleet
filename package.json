@@ -1,0 +1,10 @@
+{
+  "name": "kpp-pratama-ternate-mobile-loan",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Aplikasi peminjaman mobil dinas KPP Pratama Ternate",
+  "scripts": {
+    "start": "./start.sh",
+    "stop": "./stop.sh"
+  }
+}
