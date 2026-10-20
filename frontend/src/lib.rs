@@ -367,6 +367,32 @@ fn validate_return(booking_id: String, validating: Rc<RefCell<HashSet<String>>>)
     });
 }
 
+fn reset_bookings(state: Rc<RefCell<Vec<Vehicle>>>, validating: Rc<RefCell<HashSet<String>>>) {
+    let window = web_sys::window().unwrap();
+    if !window.confirm_with_message("Reset semua data peminjaman dan pengembalian? Tindakan ini tidak dapat dibatalkan.").unwrap_or(false) {
+        return;
+    }
+    let button = el("resetBookings");
+    button.set_attribute("disabled", "true").unwrap();
+    let active = validating.clone();
+    spawn_local(async move {
+        match post_json("/api/bookings/reset", "{}").await {
+            Ok(_) => {
+                validating.borrow_mut().clear();
+                set_toast("Seluruh data peminjaman dan pengembalian berhasil direset.");
+                if let Err(error) = refresh_fleet(state).await {
+                    set_toast(&error);
+                }
+                if let Err(error) = refresh_pending_returns(active).await {
+                    set_toast(&error);
+                }
+            }
+            Err(error) => set_toast(&error),
+        }
+        el("resetBookings").remove_attribute("disabled").unwrap();
+    });
+}
+
 fn input_value(form: &HtmlFormElement, name: &str) -> String {
     form.elements().named_item(name).unwrap().dyn_into::<HtmlInputElement>().unwrap().value()
 }
@@ -640,6 +666,14 @@ pub fn start() {
     }) as Box<dyn FnMut(Event)>);
     el("pendingReturns").add_event_listener_with_callback("click", approval_click.as_ref().unchecked_ref()).unwrap();
     approval_click.forget();
+
+    let reset_state = state.clone();
+    let reset_validations = validating_returns.clone();
+    let reset_click = Closure::wrap(Box::new(move |_event: Event| {
+        reset_bookings(reset_state.clone(), reset_validations.clone());
+    }) as Box<dyn FnMut(Event)>);
+    el("resetBookings").add_event_listener_with_callback("click", reset_click.as_ref().unchecked_ref()).unwrap();
+    reset_click.forget();
 
     let login_state = state.clone();
     let login_employees = employee_names.clone();

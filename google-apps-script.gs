@@ -78,6 +78,21 @@ function doGet(e) {
         : [];
       return output({ ok: true, employees: employees });
     }
+    if (payload.action === "resetBookings") {
+      var bookingSheet = spreadsheet.getSheetByName("peminjaman");
+      var returnSheet = spreadsheet.getSheetByName("pengembalian");
+      if (!bookingSheet || !returnSheet) throw new Error("Tab peminjaman atau pengembalian tidak ditemukan");
+      var removed = {};
+      [[bookingSheet, "peminjaman"], [returnSheet, "pengembalian"]].forEach(function(entry) {
+        var sheet = entry[0];
+        var lastRow = sheet.getLastRow();
+        removed[entry[1]] = Math.max(0, lastRow - 1);
+        if (lastRow > 1 && sheet.getLastColumn() > 0) {
+          sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
+        }
+      });
+      return output({ ok: true, removed: removed });
+    }
     if (!Object.prototype.hasOwnProperty.call(SHEET_HEADERS, payload.sheetName)) {
       throw new Error("Sheet tidak diizinkan: " + payload.sheetName);
     }

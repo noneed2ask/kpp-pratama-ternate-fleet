@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f3f7fb">
   <title>Peminjaman Kendaraan Dinas | KPP Pratama Ternate</title>
-  <link rel="stylesheet" href="/styles.css?v=fleet-13">
+  <link rel="stylesheet" href="/styles.css?v=fleet-14">
 </head>
 <body>
   <section id="loginScreen" class="login-screen">
@@ -53,6 +53,10 @@
         <div><p class="eyebrow">ADMIN</p><h2 id="approvalTitle">Validasi pengembalian</h2><p class="section-description">Pengajuan check-out menunggu persetujuan admin.</p></div>
       </div>
       <div id="pendingReturns" class="pending-returns" aria-live="polite"></div>
+      <div class="admin-reset">
+        <p>Reset akan menghapus seluruh riwayat peminjaman dan pengembalian serta membebaskan semua kendaraan.</p>
+        <button id="resetBookings" class="reset-bookings" type="button">Reset semua data peminjaman</button>
+      </div>
     </section>
 
     <section class="fleet-section" aria-labelledby="fleetTitle">
@@ -90,7 +94,7 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script type="module">
-    import init from "/pkg/kpp_fleet_frontend.js?v=fleet-opt-6";
+    import init from "/pkg/kpp_fleet_frontend.js?v=fleet-opt-7";
     init();
   </script>
 </body>

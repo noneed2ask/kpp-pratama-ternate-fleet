@@ -62,6 +62,7 @@ static EMPLOYEE_NAMES_CACHE: OnceLock<Mutex<Option<(Instant, Vec<String>)>>> = O
 static SPREADSHEET_COUNTS_CACHE: OnceLock<Mutex<Option<(Instant, HashMap<String, usize>)>>> = OnceLock::new();
 static AUTH_SESSIONS: OnceLock<Mutex<HashMap<String, (AuthSession, Instant)>>> = OnceLock::new();
 static RETURN_VALIDATIONS_IN_PROGRESS: OnceLock<Mutex<HashSet<Uuid>>> = OnceLock::new();
+static SHEETS_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn http_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(|| {
@@ -430,8 +431,24 @@ async fn sheets_append(sheet: &str, row: Vec<String>) -> Result<(), String> {
     }
     let spreadsheet_id = env::var("GOOGLE_SPREADSHEET_ID")
         .map_err(|_| "GOOGLE_SPREADSHEET_ID belum diatur".to_string())?;
+    let _write_guard = SHEETS_WRITE_LOCK.get_or_init(|| Mutex::new(())).lock().await;
     sheets_request(json!({ "spreadsheetId": spreadsheet_id, "sheetName": sheet, "row": row })).await?;
     Ok(())
+}
+async fn sheets_reset_bookings() -> Result<Value, String> {
+    let Ok(url) = env::var("GOOGLE_APPS_SCRIPT_URL") else {
+        return Ok(json!({"removed": {}}));
+    };
+    if url.trim().is_empty() {
+        return Ok(json!({"removed": {}}));
+    }
+    let spreadsheet_id = env::var("GOOGLE_SPREADSHEET_ID")
+        .map_err(|_| "GOOGLE_SPREADSHEET_ID belum diatur".to_string())?;
+    let _write_guard = SHEETS_WRITE_LOCK.get_or_init(|| Mutex::new(())).lock().await;
+    sheets_request(json!({
+        "action": "resetBookings",
+        "spreadsheetId": spreadsheet_id
+    })).await
 }
 async fn sheets_append_booking(booking: &Booking) -> Result<(), String> {
     let loan_type = match booking.loan_type.as_deref() {
@@ -558,6 +575,7 @@ async fn sheets_update_booking_check_time(booking: &Booking, check_in: bool) -> 
         ("checkOutTime", booking.check_out_time.as_deref())
     };
     let value = value.ok_or_else(|| "Waktu check-in/check-out tidak tersedia".to_string())?;
+    let _write_guard = SHEETS_WRITE_LOCK.get_or_init(|| Mutex::new(())).lock().await;
     let mut payload = json!({
         "action": "updateBookingCheckTimes",
         "spreadsheetId": spreadsheet_id,
@@ -676,6 +694,30 @@ async fn pending_returns(State(state): State<SharedState>, Extension(session): E
     }
     let app = state.lock().await;
     Ok(Json(app.bookings.iter().filter(|booking| booking.status == "return_pending").cloned().collect()))
+}
+
+async fn reset_bookings(State(state): State<SharedState>, Extension(session): Extension<AuthSession>) -> (StatusCode, Json<Value>) {
+    if session.role != "admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error":"Akses khusus admin."})));
+    }
+    let mut app = state.lock().await;
+    let spreadsheet_result = match sheets_reset_bookings().await {
+        Ok(result) => result,
+        Err(error) => {
+            eprintln!("Gagal mereset data peminjaman dan pengembalian: {error}");
+            return (StatusCode::BAD_GATEWAY, Json(json!({"error":format!("Data spreadsheet gagal direset: {error}")})));
+        }
+    };
+    let removed = app.bookings.len();
+    app.bookings.clear();
+    app.spreadsheet_booking_counts = Some(HashMap::new());
+    save_state(&app).await;
+    *SPREADSHEET_COUNTS_CACHE.get_or_init(|| Mutex::new(None)).lock().await =
+        Some((Instant::now(), HashMap::new()));
+    (StatusCode::OK, Json(json!({
+        "removed": removed,
+        "spreadsheet": spreadsheet_result["removed"]
+    })))
 }
 
 async fn validate_return(State(state): State<SharedState>, Path(id): Path<Uuid>, Extension(session): Extension<AuthSession>) -> (StatusCode, Json<Value>) {
@@ -995,6 +1037,7 @@ async fn main() {
         .route("/api/vehicles", get(state_response))
         .route("/api/employees", get(employee_names))
         .route("/api/returns/pending", get(pending_returns))
+        .route("/api/bookings/reset", post(reset_bookings))
         .route("/api/logout", post(logout))
         .route("/api/bookings", post(create_booking))
         .route("/api/bookings/{id}/check-in", post(check_in_booking))

@@ -46,3 +46,5 @@ Untuk menyinkronkan peminjaman, pengembalian, check-in/check-out, dan frekuensi 
 Tab `peminjaman` memakai kolom **Nomor ST**, **Jam Check-in**, **Jam Check-out**, **Status**, dan **Tipe peminjaman**. Jika dua kolom waktu belum ada, Apps Script akan menambahkannya setelah **Tujuan / keterangan**. Setelah mengubah Apps Script, deploy versi Web app terbaru. Tanpa konfigurasi Google, data armada tetap tersimpan di `data/bookings.json`.
 
 Nama peminjam dan pengembali dimuat dari kolom dengan judul berawalan **Nama** pada baris pertama tab **pegawai**. Setelah memperbarui Apps Script, deploy versi Web app terbaru agar endpoint daftar pegawai tersedia.
+
+Reset data pada halaman admin juga mengosongkan isi tab `peminjaman` dan `pengembalian` tanpa menghapus baris header. Deploy versi Web app terbaru setelah memperbarui Apps Script agar reset tersedia.

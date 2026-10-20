@@ -43,6 +43,11 @@ body.admin .admin-only { display: block; }
 .validation-error { margin: 0 0 12px; padding: 10px 12px; border: 1px solid #f0d0cd; border-radius: 10px; background: #fff4f2; color: #9f3d36; font-size: 12px; line-height: 1.5; }
 .validate-return:disabled { cursor: wait; opacity: .72; box-shadow: none; transform: none; }
 .pending-empty { padding: 20px; border: 1px dashed #cbd9e0; border-radius: 14px; color: var(--muted); text-align: center; }
+.admin-reset { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 20px; padding-top: 18px; border-top: 1px solid #dce9ef; }
+.admin-reset p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.reset-bookings { flex: 0 0 auto; padding: 10px 14px; border: 1px solid #bd4d46; border-radius: 11px; background: #fff4f2; color: #9f3d36; font-size: 12px; font-weight: 750; cursor: pointer; }
+.reset-bookings:hover { background: #ffe8e5; }
+.reset-bookings:disabled { cursor: wait; opacity: .72; }
 .login-card .form-row input { width: 100%; min-height: 48px; padding: 11px 13px; border: 1px solid #d9e3e9; border-radius: 11px; background: #fbfdfe; transition: border-color .18s ease, box-shadow .18s ease; }
 .login-card .form-row input:focus { border-color: #58a9ca; outline: 0; box-shadow: 0 0 0 4px rgba(8,126,174,.1); }
 
