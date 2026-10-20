@@ -2,4 +2,8 @@
 /frontend/target/
 /data/bookings.json
 /.env
+/.fleet-auth.env
+/dams-app/data/
+/dams-app/target/
+/dams-app/frontend/target/
 *.log

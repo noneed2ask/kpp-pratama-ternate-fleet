@@ -3,12 +3,26 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+if [ -f .env ]; then
+  set -a
+  source .env
+  set +a
+fi
+if [ -f .fleet-auth.env ]; then
+  set -a
+  source .fleet-auth.env
+  set +a
+fi
+
 if pgrep -f 'target/release/kpp-fleet' >/dev/null; then
   echo "Aplikasi sudah berjalan di http://localhost:3000"
   exit 0
 fi
 
-if [ ! -x target/release/kpp-fleet ]; then
+if [ ! -x target/release/kpp-fleet ] \
+  || [ Cargo.toml -nt target/release/kpp-fleet ] \
+  || { [ -f Cargo.lock ] && [ Cargo.lock -nt target/release/kpp-fleet ]; } \
+  || [ -n "$(find src -type f -newer target/release/kpp-fleet -print -quit)" ]; then
   source "$HOME/.cargo/env"
   cargo build --release
 fi

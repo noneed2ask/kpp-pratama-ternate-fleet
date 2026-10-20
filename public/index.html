@@ -5,9 +5,31 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f3f7fb">
   <title>Peminjaman Kendaraan Dinas | KPP Pratama Ternate</title>
-  <link rel="stylesheet" href="/styles.css?v=fleet-1">
+  <link rel="stylesheet" href="/styles.css?v=fleet-13">
 </head>
 <body>
+  <section id="loginScreen" class="login-screen">
+    <div class="login-layout">
+      <aside class="login-intro">
+        <div class="brand-icon" aria-hidden="true">🚘</div>
+        <p class="eyebrow">KPP PRATAMA TERNATE</p>
+        <h1>Perjalanan dinas, lebih tertata.</h1>
+        <p>Kelola peminjaman kendaraan dan pantau status armada dalam satu tempat.</p>
+        <div class="login-points"><span>01</span> Pilih kendaraan yang tersedia</div>
+        <div class="login-points"><span>02</span> Catat check-in dan pengembalian</div>
+      </aside>
+      <form id="loginForm" class="login-card">
+        <p class="eyebrow">SELAMAT DATANG</p>
+        <h2>Masuk ke akun</h2>
+        <p class="subtitle">Gunakan akun user atau admin untuk melanjutkan.</p>
+        <div class="form-row"><label for="loginUsername">Username</label><input id="loginUsername" name="username" autocomplete="username" placeholder="Masukkan username" required></div>
+        <div class="form-row"><label for="loginPassword">Password</label><input id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="Masukkan password" required></div>
+        <p id="loginError" class="login-error" role="alert"></p>
+        <button class="submit" type="submit">Masuk <span aria-hidden="true">→</span></button>
+        <small class="login-security">Akses hanya untuk pegawai yang memiliki akun.</small>
+      </form>
+    </div>
+  </section>
   <main class="page-shell">
     <header class="topbar">
       <div class="brand">
@@ -21,21 +43,42 @@
       <div class="overview">
         <div class="today"><span>Hari ini</span><strong id="today">Memuat tanggal...</strong></div>
         <div class="availability"><span class="availability-dot"></span><strong id="availableCount">0</strong><span>kendaraan tersedia</span></div>
+        <span id="roleBadge" class="status available"></span>
+        <button id="logout" class="logout-button" type="button">Keluar</button>
       </div>
     </header>
+
+    <section class="admin-only" aria-labelledby="approvalTitle">
+      <div class="section-heading">
+        <div><p class="eyebrow">ADMIN</p><h2 id="approvalTitle">Validasi pengembalian</h2><p class="section-description">Pengajuan check-out menunggu persetujuan admin.</p></div>
+      </div>
+      <div id="pendingReturns" class="pending-returns" aria-live="polite"></div>
+    </section>
 
     <section class="fleet-section" aria-labelledby="fleetTitle">
       <div class="section-heading">
         <div>
           <p class="eyebrow">ARMADA</p>
           <h2 id="fleetTitle">Pilih kendaraan</h2>
-          <p class="section-description">Pilih kendaraan untuk mencatat peminjaman atau pengembaliannya.</p>
+          <p class="section-description">Pilih kendaraan untuk mencatat peminjaman atau mengajukan check-out.</p>
         </div>
         <div class="legend"><span class="status available">Tersedia</span><span class="status booked">Dipinjam</span></div>
       </div>
       <div id="fleet" class="fleet-grid" aria-live="polite"></div>
     </section>
-    <footer>Data peminjaman disimpan pada perangkat ini.</footer>
+
+    <section class="frequency-section" aria-labelledby="frequencyTitle">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">RINGKASAN</p>
+          <h2 id="frequencyTitle">Frekuensi peminjaman</h2>
+          <p class="section-description">Berdasarkan seluruh catatan pada spreadsheet peminjaman.</p>
+        </div>
+      </div>
+      <div id="bookingMetrics" class="booking-metrics" aria-live="polite"></div>
+      <div id="bookingFrequency" class="booking-frequency" aria-live="polite"></div>
+    </section>
+    <footer>Data peminjaman disimpan pada perangkat ini dan disinkronkan ke spreadsheet jika dikonfigurasi.</footer>
   </main>
 
   <div id="backdrop" class="modal-backdrop" aria-hidden="true">
@@ -47,7 +90,7 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script type="module">
-    import init from "/pkg/kpp_fleet_frontend.js";
+    import init from "/pkg/kpp_fleet_frontend.js?v=fleet-opt-6";
     init();
   </script>
 </body>

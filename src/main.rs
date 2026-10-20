@@ -1,8 +1,8 @@
-use axum::{extract::{Path, Query, State}, http::{header, HeaderValue, StatusCode}, response::Response, routing::{get, post}, Json, Router};
+use axum::{extract::{Extension, Path, Query, Request, State}, http::{header, HeaderValue, StatusCode}, middleware::{self, Next}, response::{IntoResponse, Response}, routing::{get, post}, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
-use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
+use std::{collections::{HashMap, HashSet}, env, net::SocketAddr, path::PathBuf, sync::{Arc, OnceLock}, time::{Duration, Instant}};
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, SecondsFormat, Utc};
 use tokio::{fs, sync::Mutex};
 use uuid::Uuid;
 
@@ -11,13 +11,22 @@ struct Vehicle { id: String, name: String, plate: String, color: String, icon: S
 #[derive(Clone, Serialize, Deserialize)]
 struct Booking {
     id: Uuid, #[serde(rename = "vehicleId")] vehicle_id: String, vehicle: String, name: String,
+    #[serde(rename = "nomorST", default)] nomor_st: String,
     #[serde(rename = "loanTime")] loan_time: String, notes: String, status: String,
+    #[serde(rename = "loanType", default)] loan_type: Option<String>,
     #[serde(rename = "createdAt")] created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "checkInTime", default)] check_in_time: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "checkOutTime", default)] check_out_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "returnName")] return_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "returnTime")] return_time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")] fuel: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "returnNotes")] return_notes: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "returnValidationError", default)] return_validation_error: Option<String>,
 }
+#[derive(Clone, Serialize, Deserialize)]
+struct AuthSession { role: String, username: String }
+#[derive(Deserialize)]
+struct LoginInput { username: String, password: String }
 #[derive(Clone, Serialize, Deserialize, Debug)]
 enum EntryType { #[serde(rename = "income")] Income, #[serde(rename = "expense")] Expense }
 
@@ -43,14 +52,40 @@ struct AppState {
     bookings: Vec<Booking>,
     #[serde(default)] finance_entries: Vec<FinanceEntry>,
     #[serde(default)] learned_keywords: Vec<LearnedKeyword>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    spreadsheet_booking_counts: Option<HashMap<String, usize>>,
 }
 type SharedState = Arc<Mutex<AppState>>;
 const STATE_FILE: &str = "data/bookings.json";
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+static EMPLOYEE_NAMES_CACHE: OnceLock<Mutex<Option<(Instant, Vec<String>)>>> = OnceLock::new();
+static SPREADSHEET_COUNTS_CACHE: OnceLock<Mutex<Option<(Instant, HashMap<String, usize>)>>> = OnceLock::new();
+static AUTH_SESSIONS: OnceLock<Mutex<HashMap<String, (AuthSession, Instant)>>> = OnceLock::new();
+static RETURN_VALIDATIONS_IN_PROGRESS: OnceLock<Mutex<HashSet<Uuid>>> = OnceLock::new();
 
+fn http_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(3))
+            .timeout(Duration::from_secs(8))
+            .pool_idle_timeout(Duration::from_secs(90))
+            .build()
+            .expect("HTTP client configuration must be valid")
+    })
+}
 #[derive(Deserialize)]
-struct BookingInput { #[serde(rename = "vehicleId")] vehicle_id: Option<String>, name: Option<String>, #[serde(rename = "loanTime")] loan_time: Option<String>, notes: Option<String> }
+struct BookingInput {
+    #[serde(rename = "vehicleId")] vehicle_id: Option<String>,
+    #[serde(rename = "nomorST")] nomor_st: Option<String>,
+    name: Option<String>,
+    #[serde(rename = "loanTime")] loan_time: Option<String>,
+    #[serde(rename = "loanType")] loan_type: Option<String>,
+    notes: Option<String>,
+}
 #[derive(Deserialize)]
 struct ReturnInput { name: Option<String>, #[serde(rename = "returnTime")] return_time: Option<String>, fuel: Option<String>, notes: Option<String> }
+#[derive(Deserialize)]
+struct EmptyInput {}
 
 fn vehicles() -> Vec<Vehicle> {
     [("innova-1321","Innova","DG 1321 WP","black","🚗"),("xpander-1217","Xpander","DG 1217 WP","black","🚗"),("strada","Strada","DG 8192 WP","silver","🛻"),("terios","Terios","DG 301 HS","silver","🚙")]
@@ -58,11 +93,64 @@ fn vehicles() -> Vec<Vehicle> {
 }
 fn snapshot(state: &AppState) -> Value {
     let vehicles = state.vehicles.iter().map(|vehicle| {
-        let booking = state.bookings.iter().find(|b| b.vehicle_id == vehicle.id && b.status == "booked");
+        let booking = state.bookings.iter().find(|b| b.vehicle_id == vehicle.id && matches!(b.status.as_str(), "booked" | "pending" | "return_pending"));
+        let booking_count = state.bookings.iter().filter(|b| b.vehicle_id == vehicle.id).count();
+        let booking = booking.map(|booking| {
+            let mut value = serde_json::to_value(booking).expect("booking serialization must succeed");
+            let (elapsed_minutes, over_limit) = booking_timing(booking, Utc::now().naive_utc());
+            value["elapsedMinutes"] = elapsed_minutes.map_or(Value::Null, |minutes| json!(minutes));
+            value["overLimit"] = json!(over_limit);
+            value
+        });
         json!({ "id": vehicle.id, "name": vehicle.name, "plate": vehicle.plate, "color": vehicle.color, "icon": vehicle.icon,
-            "status": if booking.is_some() {"booked"} else {"available"}, "booking": booking })
+            "status": if booking.is_some() {"booked"} else {"available"}, "booking": booking, "bookingCount": booking_count })
     }).collect::<Vec<_>>();
     json!({ "vehicles": vehicles })
+}
+fn duration_limit_minutes(loan_type: Option<&str>) -> Option<i64> {
+    match loan_type {
+        Some("full_day") => Some(570),
+        Some("half_day") => Some(300),
+        _ => None,
+    }
+}
+fn parse_booking_time(value: &str) -> Option<NaiveDateTime> {
+    DateTime::parse_from_rfc3339(value).map(|time| time.naive_utc()).ok()
+        .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S").ok())
+        .or_else(|| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M").ok())
+}
+fn booking_timing(booking: &Booking, now: NaiveDateTime) -> (Option<i64>, bool) {
+    let Some(start) = booking.check_in_time.as_deref().and_then(parse_booking_time) else {
+        return (None, false);
+    };
+    let end = booking.check_out_time.as_deref().and_then(parse_booking_time).unwrap_or(now);
+    let elapsed = (end - start).num_minutes().max(0);
+    let over_limit = duration_limit_minutes(booking.loan_type.as_deref())
+        .is_some_and(|limit| elapsed > limit);
+    (Some(elapsed), over_limit)
+}
+fn normalize_vehicle_label(value: &str) -> String {
+    value.chars().filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_lowercase()).collect()
+}
+fn spreadsheet_booking_count(vehicle: &Vehicle, counts: &HashMap<String, usize>) -> usize {
+    let name = normalize_vehicle_label(&vehicle.name);
+    let plate = normalize_vehicle_label(&vehicle.plate);
+    counts.iter().filter(|(label, _)| {
+        let label = normalize_vehicle_label(label);
+        label == name || label.starts_with(&name) || (!plate.is_empty() && label.contains(&plate))
+    }).map(|(_, count)| count).sum()
+}
+fn snapshot_with_spreadsheet_counts(state: &AppState, counts: &HashMap<String, usize>) -> Value {
+    let mut result = snapshot(state);
+    if let Some(vehicle_values) = result["vehicles"].as_array_mut() {
+        for (vehicle_value, vehicle) in vehicle_values.iter_mut().zip(&state.vehicles) {
+            let spreadsheet_count = spreadsheet_booking_count(vehicle, counts);
+            let local_count = state.bookings.iter().filter(|booking| booking.vehicle_id == vehicle.id).count();
+            vehicle_value["bookingCount"] = json!(spreadsheet_count.max(local_count));
+        }
+    }
+    result
 }
 
 #[derive(Deserialize)]
@@ -299,38 +387,345 @@ async fn load_state() -> AppState {
             }
             Err(error) => {
                 eprintln!("File status kendaraan tidak valid, memulai data baru: {error}");
-                AppState { vehicles: vehicles(), bookings: vec![], finance_entries: vec![], learned_keywords: vec![] }
+                AppState { vehicles: vehicles(), bookings: vec![], finance_entries: vec![], learned_keywords: vec![], spreadsheet_booking_counts: None }
             }
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => AppState { vehicles: vehicles(), bookings: vec![], finance_entries: vec![], learned_keywords: vec![] },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => AppState { vehicles: vehicles(), bookings: vec![], finance_entries: vec![], learned_keywords: vec![], spreadsheet_booking_counts: None },
         Err(error) => {
             eprintln!("Gagal membaca status kendaraan, memulai data baru: {error}");
-            AppState { vehicles: vehicles(), bookings: vec![], finance_entries: vec![], learned_keywords: vec![] }
+            AppState { vehicles: vehicles(), bookings: vec![], finance_entries: vec![], learned_keywords: vec![], spreadsheet_booking_counts: None }
         }
     }
 }
-async fn sheets_append(sheet: &str, row: Vec<String>) {
-    let Some(url) = env::var("GOOGLE_APPS_SCRIPT_URL").ok() else { return };
-    let Ok(spreadsheet_id) = env::var("GOOGLE_SPREADSHEET_ID") else {
-        eprintln!("Gagal menyimpan ke spreadsheet: GOOGLE_SPREADSHEET_ID belum diatur.");
-        return;
-    };
-    let payload = json!({ "spreadsheetId": spreadsheet_id, "sheetName": sheet, "row": row }).to_string();
-    let client = reqwest::Client::new();
-    match client.get(url).query(&[("payload", payload)]).send().await {
-        Ok(response) if response.status().is_success() => match response.json::<Value>().await {
-            Ok(result) if result["ok"] == true => {},
-            Ok(result) => eprintln!("Gagal menyimpan ke spreadsheet: {result}"),
-            Err(error) => eprintln!("Respons spreadsheet tidak valid: {error}"),
-        },
-        Ok(response) => eprintln!("Gagal menyimpan ke spreadsheet: {}", response.status()),
-        Err(error) => eprintln!("Koneksi spreadsheet gagal: {error}"),
+async fn sheets_request(payload: Value) -> Result<Value, String> {
+    let url = env::var("GOOGLE_APPS_SCRIPT_URL")
+        .map_err(|_| "GOOGLE_APPS_SCRIPT_URL belum diatur".to_string())?;
+    if url.trim().is_empty() {
+        return Err("GOOGLE_APPS_SCRIPT_URL kosong".into());
     }
+    let payload = payload.to_string();
+    let response = http_client().get(url).query(&[("payload", payload)]).send().await
+        .map_err(|error| format!("Koneksi spreadsheet gagal: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Google Apps Script merespons dengan status {}", response.status()));
+    }
+    let result = response.json::<Value>().await
+        .map_err(|error| format!("Respons spreadsheet tidak valid: {error}"))?;
+    if result["ok"] != true {
+        return Err(format!(
+            "Google Apps Script menolak permintaan: {}",
+            result["error"].as_str().unwrap_or("kesalahan tidak diketahui")
+        ));
+    }
+    Ok(result)
+}
+async fn sheets_append(sheet: &str, row: Vec<String>) -> Result<(), String> {
+    let Ok(url) = env::var("GOOGLE_APPS_SCRIPT_URL") else {
+        eprintln!("Google Spreadsheet tidak dikonfigurasi; data {sheet} hanya tersimpan secara lokal.");
+        return Ok(());
+    };
+    if url.trim().is_empty() {
+        eprintln!("Google Spreadsheet tidak dikonfigurasi; data {sheet} hanya tersimpan secara lokal.");
+        return Ok(());
+    }
+    let spreadsheet_id = env::var("GOOGLE_SPREADSHEET_ID")
+        .map_err(|_| "GOOGLE_SPREADSHEET_ID belum diatur".to_string())?;
+    sheets_request(json!({ "spreadsheetId": spreadsheet_id, "sheetName": sheet, "row": row })).await?;
+    Ok(())
+}
+async fn sheets_append_booking(booking: &Booking) -> Result<(), String> {
+    let loan_type = match booking.loan_type.as_deref() {
+        Some("full_day") => "Full Day (9,5 jam)",
+        Some("half_day") => "Half Day (5 jam)",
+        _ => "",
+    };
+    let row10 = vec![
+        booking.created_at.clone(), booking.vehicle.clone(), booking.name.clone(),
+        booking.loan_time.clone(), booking.nomor_st.clone(), booking.notes.clone(),
+        booking.check_in_time.clone().unwrap_or_default(),
+        booking.check_out_time.clone().unwrap_or_default(),
+        "Dipinjam".into(), loan_type.into(),
+    ];
+    let row8 = vec![
+        booking.created_at.clone(), booking.vehicle.clone(), booking.name.clone(),
+        booking.loan_time.clone(), booking.nomor_st.clone(), booking.notes.clone(),
+        "Dipinjam".into(), loan_type.into(),
+    ];
+    let notes_with_type = if booking.notes.is_empty() {
+        format!("Tipe peminjaman: {loan_type}")
+    } else {
+        format!("{} | Tipe peminjaman: {loan_type}", booking.notes)
+    };
+    let row7 = vec![
+        booking.created_at.clone(), booking.vehicle.clone(), booking.name.clone(),
+        booking.loan_time.clone(), booking.nomor_st.clone(), notes_with_type.clone(),
+        "Dipinjam".into(),
+    ];
+    let mut notes_with_details = Vec::new();
+    if !booking.nomor_st.is_empty() {
+        notes_with_details.push(format!("Nomor ST: {}", booking.nomor_st));
+    }
+    if !booking.notes.is_empty() {
+        notes_with_details.push(booking.notes.clone());
+    }
+    notes_with_details.push(format!("Tipe peminjaman: {loan_type}"));
+    let row6 = vec![
+        booking.created_at.clone(), booking.vehicle.clone(), booking.name.clone(),
+        booking.loan_time.clone(), notes_with_details.join(" | "), "Dipinjam".into(),
+    ];
+    let mut last_error = None;
+    for row in [row10, row8, row7, row6] {
+        match sheets_append("peminjaman", row).await {
+            Ok(()) => return Ok(()),
+            Err(error) if error.contains("Jumlah kolom tidak sesuai") => last_error = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "Format kolom spreadsheet tidak didukung".into()))
+}
+async fn sheets_booking_counts() -> Result<Option<HashMap<String, usize>>, String> {
+    let Ok(url) = env::var("GOOGLE_APPS_SCRIPT_URL") else {
+        return Ok(None);
+    };
+    if url.trim().is_empty() {
+        return Ok(None);
+    }
+    let spreadsheet_id = env::var("GOOGLE_SPREADSHEET_ID")
+        .map_err(|_| "GOOGLE_SPREADSHEET_ID belum diatur".to_string())?;
+    let result = sheets_request(json!({
+        "action": "bookingCounts",
+        "spreadsheetId": spreadsheet_id,
+        "sheetName": "peminjaman"
+    })).await?;
+    let counts = serde_json::from_value::<HashMap<String, usize>>(result["counts"].clone())
+        .map_err(|error| format!("Data frekuensi spreadsheet tidak valid: {error}"))?;
+    Ok(Some(counts))
+}
+async fn cached_sheets_booking_counts() -> Result<Option<HashMap<String, usize>>, String> {
+    let cache = SPREADSHEET_COUNTS_CACHE.get_or_init(|| Mutex::new(None));
+    let mut cached_counts = cache.lock().await;
+    if let Some((cached_at, counts)) = cached_counts.as_ref() {
+        if cached_at.elapsed() < Duration::from_secs(60) {
+            return Ok(Some(counts.clone()));
+        }
+    }
+    let counts = sheets_booking_counts().await?;
+    if let Some(counts) = &counts {
+        *cached_counts = Some((Instant::now(), counts.clone()));
+    }
+    Ok(counts)
+}
+fn peek_sheets_booking_counts() -> Option<(HashMap<String, usize>, bool)> {
+    let cached_counts = SPREADSHEET_COUNTS_CACHE.get_or_init(|| Mutex::new(None)).try_lock().ok()?;
+    cached_counts.as_ref().map(|(cached_at, counts)| {
+        (counts.clone(), cached_at.elapsed() >= Duration::from_secs(60))
+    })
+}
+async fn sheets_employee_names() -> Result<Vec<String>, String> {
+    let spreadsheet_id = env::var("GOOGLE_SPREADSHEET_ID")
+        .map_err(|_| "GOOGLE_SPREADSHEET_ID belum diatur".to_string())?;
+    let result = sheets_request(json!({
+        "action": "employeeNames",
+        "spreadsheetId": spreadsheet_id
+    })).await?;
+    serde_json::from_value::<Vec<String>>(result["employees"].clone())
+        .map_err(|error| format!("Daftar nama pegawai dari spreadsheet tidak valid: {error}"))
+}
+async fn cached_sheets_employee_names() -> Result<Vec<String>, String> {
+    let cache = EMPLOYEE_NAMES_CACHE.get_or_init(|| Mutex::new(None));
+    let mut cached_names = cache.lock().await;
+    if let Some((cached_at, names)) = cached_names.as_ref() {
+        if cached_at.elapsed() < Duration::from_secs(900) {
+            return Ok(names.clone());
+        }
+    }
+    let names = sheets_employee_names().await?;
+    *cached_names = Some((Instant::now(), names.clone()));
+    Ok(names)
+}
+async fn sheets_update_booking_check_time(booking: &Booking, check_in: bool) -> Result<(), String> {
+    let Ok(url) = env::var("GOOGLE_APPS_SCRIPT_URL") else {
+        return Ok(());
+    };
+    if url.trim().is_empty() {
+        return Ok(());
+    }
+    let spreadsheet_id = env::var("GOOGLE_SPREADSHEET_ID")
+        .map_err(|_| "GOOGLE_SPREADSHEET_ID belum diatur".to_string())?;
+    let (key, value) = if check_in {
+        ("checkInTime", booking.check_in_time.as_deref())
+    } else {
+        ("checkOutTime", booking.check_out_time.as_deref())
+    };
+    let value = value.ok_or_else(|| "Waktu check-in/check-out tidak tersedia".to_string())?;
+    let mut payload = json!({
+        "action": "updateBookingCheckTimes",
+        "spreadsheetId": spreadsheet_id,
+        "sheetName": "peminjaman",
+        "bookingCreatedAt": booking.created_at
+    });
+    payload[key] = json!(value);
+    sheets_request(payload).await.map(|_| ())
 }
 async fn state_response(State(state): State<SharedState>) -> Json<Value> {
-    let app = state.lock().await;
-    Json(snapshot(&app))
+    let cached_counts = peek_sheets_booking_counts();
+    if cached_counts.as_ref().is_none_or(|(_, stale)| *stale)
+        && env::var("GOOGLE_APPS_SCRIPT_URL").is_ok_and(|url| !url.trim().is_empty())
+    {
+        tokio::spawn(async {
+            if let Err(error) = cached_sheets_booking_counts().await {
+                eprintln!("Gagal memperbarui cache frekuensi spreadsheet: {error}");
+            }
+        });
+    }
+    let mut app = state.lock().await;
+    let mut response = match cached_counts {
+        Some((counts, _)) => {
+            app.spreadsheet_booking_counts = Some(counts.clone());
+            snapshot_with_spreadsheet_counts(&app, &counts)
+        }
+        None => app.spreadsheet_booking_counts.as_ref()
+            .map(|counts| snapshot_with_spreadsheet_counts(&app, counts))
+            .unwrap_or_else(|| snapshot(&app)),
+    };
+    if response["vehicles"].is_null() {
+        response["vehicles"] = json!([]);
+    }
+    Json(response)
 }
+async fn employee_names() -> Result<Json<Vec<String>>, (StatusCode, Json<Value>)> {
+    cached_sheets_employee_names().await.map(Json).map_err(|error| {
+        eprintln!("Gagal memuat nama pegawai dari Google Spreadsheet: {error}");
+        (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("Daftar nama pegawai gagal dimuat: {error}")})))
+    })
+}
+
+async fn login(Json(input): Json<LoginInput>) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let configured_accounts = [
+        ("admin", env::var("FLEET_ADMIN_USERNAME"), env::var("FLEET_ADMIN_PASSWORD")),
+        ("user", env::var("FLEET_USER_USERNAME"), env::var("FLEET_USER_PASSWORD")),
+    ];
+    let mut role = None;
+    for (account_role, username, password) in configured_accounts {
+        let (Ok(username), Ok(password)) = (username, password) else {
+            return Err((StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"Akun login belum dikonfigurasi di server."}))));
+        };
+        if input.username == username && input.password == password {
+            role = Some(account_role);
+        }
+    }
+    let Some(role) = role else {
+        return Err((StatusCode::UNAUTHORIZED, Json(json!({"error":"Username atau password salah."}))));
+    };
+    let session = AuthSession { role: role.into(), username: input.username };
+    let token = Uuid::new_v4().to_string();
+    let sessions = AUTH_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    sessions.lock().await.insert(token.clone(), (session.clone(), Instant::now()));
+    Ok(Json(json!({"token": token, "role": session.role, "username": session.username})))
+}
+
+async fn authenticate(mut request: Request, next: Next) -> Response {
+    let token = request.headers().get(header::AUTHORIZATION)
+        .and_then(|header| header.to_str().ok())
+        .and_then(|header| header.strip_prefix("Bearer "));
+    let Some(token) = token else {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error":"Silakan login terlebih dahulu."}))).into_response();
+    };
+    let sessions = AUTH_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut sessions = sessions.lock().await;
+    sessions.retain(|_, (_, last_activity)| last_activity.elapsed() < Duration::from_secs(30 * 60));
+    let Some(session) = sessions.get_mut(token).map(|(session, last_activity)| {
+        *last_activity = Instant::now();
+        session.clone()
+    }) else {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"error":"Sesi login berakhir. Silakan login kembali."}))).into_response();
+    };
+    request.extensions_mut().insert(session);
+    drop(sessions);
+    next.run(request).await
+}
+
+async fn no_cache_api(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate, max-age=0"),
+    );
+    response.headers_mut().insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    response
+}
+
+async fn current_session(Extension(session): Extension<AuthSession>) -> Json<AuthSession> {
+    Json(session)
+}
+
+async fn logout(Extension(session): Extension<AuthSession>, request: Request) -> StatusCode {
+    if let Some(token) = request.headers().get(header::AUTHORIZATION)
+        .and_then(|header| header.to_str().ok())
+        .and_then(|header| header.strip_prefix("Bearer "))
+    {
+        AUTH_SESSIONS.get_or_init(|| Mutex::new(HashMap::new())).lock().await.remove(token);
+    }
+    let _ = session;
+    StatusCode::NO_CONTENT
+}
+
+async fn pending_returns(State(state): State<SharedState>, Extension(session): Extension<AuthSession>) -> Result<Json<Vec<Booking>>, (StatusCode, Json<Value>)> {
+    if session.role != "admin" {
+        return Err((StatusCode::FORBIDDEN, Json(json!({"error":"Akses khusus admin."}))));
+    }
+    let app = state.lock().await;
+    Ok(Json(app.bookings.iter().filter(|booking| booking.status == "return_pending").cloned().collect()))
+}
+
+async fn validate_return(State(state): State<SharedState>, Path(id): Path<Uuid>, Extension(session): Extension<AuthSession>) -> (StatusCode, Json<Value>) {
+    if session.role != "admin" {
+        return (StatusCode::FORBIDDEN, Json(json!({"error":"Akses khusus admin."})));
+    }
+    let submitted = {
+        let app = state.lock().await;
+        let Some(booking) = app.bookings.iter().find(|booking| booking.id == id && booking.status == "return_pending").cloned() else {
+            return (StatusCode::NOT_FOUND, Json(json!({"error":"Pengajuan pengembalian tidak ditemukan."})));
+        };
+        booking
+    };
+    let in_progress = RETURN_VALIDATIONS_IN_PROGRESS.get_or_init(|| Mutex::new(HashSet::new()));
+    {
+        let mut in_progress = in_progress.lock().await;
+        if !in_progress.insert(id) {
+            return (StatusCode::ACCEPTED, Json(json!({"message":"Validasi pengembalian sedang diproses."})));
+        }
+    }
+    let row = vec![
+        Utc::now().to_rfc3339(),
+        submitted.vehicle.clone(),
+        submitted.return_name.clone().unwrap_or_default(),
+        submitted.return_time.clone().unwrap_or_default(),
+        submitted.fuel.clone().unwrap_or_default(),
+        submitted.return_notes.clone().unwrap_or_default(),
+    ];
+    let background_state = state.clone();
+    tokio::spawn(async move {
+        let result = sheets_append("pengembalian", row).await;
+        let mut app = background_state.lock().await;
+        if let Some(booking) = app.bookings.iter_mut().find(|booking| booking.id == id && booking.status == "return_pending") {
+            match result {
+                Ok(()) => {
+                    booking.status = "returned".into();
+                    booking.return_validation_error = None;
+                }
+                Err(error) => {
+                    eprintln!("Gagal menyimpan pengembalian yang divalidasi ke spreadsheet: {error}");
+                    booking.return_validation_error = Some("Gagal menyimpan ke spreadsheet. Periksa koneksi lalu coba validasi lagi.".into());
+                }
+            }
+            save_state(&app).await;
+        }
+        in_progress.lock().await.remove(&id);
+    });
+    (StatusCode::ACCEPTED, Json(json!({"message":"Validasi diproses. Kendaraan tersedia setelah spreadsheet berhasil diperbarui."})))
+}
+
 async fn create_booking(State(state): State<SharedState>, Json(input): Json<BookingInput>) -> (StatusCode, Json<Value>) {
     let mut app = state.lock().await;
     let vehicle_id = input.vehicle_id.unwrap_or_default();
@@ -339,30 +734,81 @@ async fn create_booking(State(state): State<SharedState>, Json(input): Json<Book
     let name = input.name.unwrap_or_default().trim().to_string();
     let loan_time = input.loan_time.unwrap_or_default();
     if name.is_empty() || loan_time.is_empty() { return (StatusCode::BAD_REQUEST, Json(json!({"error":"Nama dan waktu peminjaman wajib diisi."}))); }
-    if app.bookings.iter().any(|b| b.vehicle_id == vehicle_id && b.status == "booked") { return (StatusCode::CONFLICT, Json(json!({"error":"Mobil sedang dipinjam."}))); }
-    let booking = Booking { id: Uuid::new_v4(), vehicle_id: vehicle.id.clone(), vehicle: format!("{} {}", vehicle.name, vehicle.plate).trim().into(), name, loan_time, notes: input.notes.unwrap_or_default(), status:"booked".into(), created_at: Utc::now().to_rfc3339(), return_name:None, return_time:None, fuel:None, return_notes:None };
+    let loan_type = input.loan_type.unwrap_or_default();
+    if !matches!(loan_type.as_str(), "full_day" | "half_day") {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"Pilih durasi Full Day atau Half Day."})));
+    }
+    if app.bookings.iter().any(|b| b.vehicle_id == vehicle_id && matches!(b.status.as_str(), "booked" | "return_pending")) { return (StatusCode::CONFLICT, Json(json!({"error":"Mobil sedang dipinjam."}))); }
+    let booking = Booking {
+        id: Uuid::new_v4(),
+        vehicle_id: vehicle.id.clone(),
+        vehicle: format!("{} {}", vehicle.name, vehicle.plate).trim().into(),
+        name,
+        nomor_st: input.nomor_st.unwrap_or_default().trim().to_string(),
+        loan_time,
+        notes: input.notes.unwrap_or_default(),
+        status: "booked".into(),
+        loan_type: Some(loan_type),
+        created_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        check_in_time: None,
+        check_out_time: None,
+        return_name: None,
+        return_time: None,
+        fuel: None,
+        return_notes: None,
+        return_validation_error: None,
+    };
     app.bookings.push(booking.clone());
-    let response = json!({"booking": booking, "vehicles": snapshot(&app)["vehicles"]});
+    let response = json!({"booking": booking.clone(), "vehicles": snapshot(&app)["vehicles"]});
     save_state(&app).await;
     drop(app);
-    let row = vec![response["booking"]["createdAt"].as_str().unwrap_or_default().into(), response["booking"]["vehicle"].as_str().unwrap_or_default().into(), response["booking"]["name"].as_str().unwrap_or_default().into(), response["booking"]["loanTime"].as_str().unwrap_or_default().into(), response["booking"]["notes"].as_str().unwrap_or_default().into(), "Dipinjam".into()];
-    tokio::spawn(sheets_append("peminjaman", row));
+    tokio::spawn(async move {
+        if let Err(error) = sheets_append_booking(&booking).await {
+            eprintln!("Gagal menyimpan peminjaman ke spreadsheet: {error}");
+        }
+    });
     (StatusCode::CREATED, Json(response))
+}
+async fn check_in_booking(State(state): State<SharedState>, Path(id): Path<Uuid>, Json(_input): Json<EmptyInput>) -> (StatusCode, Json<Value>) {
+    let mut app = state.lock().await;
+    let Some(booking) = app.bookings.iter_mut().find(|booking| booking.id == id && booking.status == "booked") else {
+        return (StatusCode::NOT_FOUND, Json(json!({"error":"Peminjaman tidak ditemukan."})));
+    };
+    if booking.check_in_time.is_some() {
+        return (StatusCode::CONFLICT, Json(json!({"error":"Check-in sudah dicatat."})));
+    }
+    booking.check_in_time = Some(Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true));
+    let updated = booking.clone();
+    let response = json!({"vehicles": snapshot(&app)["vehicles"]});
+    save_state(&app).await;
+    drop(app);
+    tokio::spawn(async move {
+        if let Err(error) = sheets_update_booking_check_time(&updated, true).await {
+            eprintln!("Gagal memperbarui waktu check-in di spreadsheet: {error}");
+        }
+    });
+    (StatusCode::OK, Json(response))
 }
 async fn return_booking(State(state): State<SharedState>, Path(id): Path<Uuid>, Json(input): Json<ReturnInput>) -> (StatusCode, Json<Value>) {
     let mut app = state.lock().await;
     let Some(booking) = app.bookings.iter_mut().find(|b| b.id == id && b.status == "booked") else { return (StatusCode::NOT_FOUND, Json(json!({"error":"Peminjaman tidak ditemukan."}))); };
+    if booking.check_in_time.is_none() {
+        return (StatusCode::CONFLICT, Json(json!({"error":"Check-in harus dicatat sebelum mengajukan check-out."})));
+    }
     let name = input.name.unwrap_or_default().trim().to_string();
     let return_time = input.return_time.unwrap_or_default();
     let fuel = input.fuel.unwrap_or_default().trim().to_string();
     if name.is_empty() || return_time.is_empty() || fuel.is_empty() { return (StatusCode::BAD_REQUEST, Json(json!({"error":"Nama, waktu pengembalian, dan pengisian bensin wajib diisi."}))); }
-    booking.return_name=Some(name); booking.return_time=Some(return_time); booking.fuel=Some(fuel); booking.return_notes=Some(input.notes.unwrap_or_default()); booking.status="returned".into();
-    let returned = booking.clone();
-    let response = json!({"booking": returned, "vehicles": snapshot(&app)["vehicles"]});
+    booking.return_name=Some(name); booking.return_time=Some(return_time.clone()); booking.check_out_time=Some(return_time); booking.fuel=Some(fuel); booking.return_notes=Some(input.notes.unwrap_or_default()); booking.status="return_pending".into();
+    let submitted = booking.clone();
+    let response = json!({"booking": submitted.clone(), "vehicles": snapshot(&app)["vehicles"]});
     save_state(&app).await;
     drop(app);
-    let b = &response["booking"];
-    tokio::spawn(sheets_append("pengembalian", vec![Utc::now().to_rfc3339(),b["vehicle"].as_str().unwrap_or_default().into(),b["returnName"].as_str().unwrap_or_default().into(),b["returnTime"].as_str().unwrap_or_default().into(),b["fuel"].as_str().unwrap_or_default().into(),b["returnNotes"].as_str().unwrap_or_default().into()]));
+    tokio::spawn(async move {
+        if let Err(error) = sheets_update_booking_check_time(&submitted, false).await {
+            eprintln!("Gagal memperbarui check-out pengembalian di spreadsheet: {error}");
+        }
+    });
     (StatusCode::OK, Json(response))
 }
 
@@ -533,15 +979,41 @@ async fn static_file(uri: axum::extract::OriginalUri) -> Result<Response, Status
 async fn main() {
     let port = env::var("PORT").unwrap_or_else(|_| "3000".into()).parse().unwrap_or(3000);
     let state = Arc::new(Mutex::new(load_state().await));
-    let app = Router::new()
+    tokio::spawn(async {
+        let (counts, employees) = tokio::join!(
+            cached_sheets_booking_counts(),
+            cached_sheets_employee_names()
+        );
+        if let Err(error) = counts {
+            eprintln!("Gagal menghangatkan cache frekuensi spreadsheet: {error}");
+        }
+        if let Err(error) = employees {
+            eprintln!("Gagal menghangatkan cache nama pegawai: {error}");
+        }
+    });
+    let protected_api = Router::new()
         .route("/api/vehicles", get(state_response))
+        .route("/api/employees", get(employee_names))
+        .route("/api/returns/pending", get(pending_returns))
+        .route("/api/logout", post(logout))
         .route("/api/bookings", post(create_booking))
+        .route("/api/bookings/{id}/check-in", post(check_in_booking))
         .route("/api/bookings/{id}/return", post(return_booking))
+        .route("/api/bookings/{id}/validate-return", post(validate_return))
         .route("/api/finance/entries", get(finance_entries).post(create_finance_entry).delete(reset_finance_entries))
         .route("/api/finance/chat", post(finance_chat))
         .route("/api/finance/summary", get(finance_summary_route))
         .route("/api/finance/daily", get(finance_daily))
         .route("/api/finance/export.csv", get(finance_export))
+        .route_layer(middleware::from_fn(authenticate));
+    let session_api = Router::new()
+        .route("/api/session", get(current_session))
+        .route_layer(middleware::from_fn(authenticate));
+    let app = Router::new()
+        .route("/api/login", post(login))
+        .merge(session_api)
+        .merge(protected_api)
+        .route_layer(middleware::from_fn(no_cache_api))
         .fallback(static_file)
         .with_state(state);
     let addr = SocketAddr::from(([0,0,0,0], port));
@@ -552,8 +1024,51 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_known_finance_entry, detect_finance_entry, local_entry_date, parse_chat_amount, EntryType, FinanceEntry, LearnedKeyword};
+    use super::{
+        booking_timing, classify_known_finance_entry, detect_finance_entry, local_entry_date,
+        parse_chat_amount, spreadsheet_booking_count, vehicles, Booking, EntryType, FinanceEntry,
+        LearnedKeyword,
+    };
     use chrono::NaiveDate;
+    use std::collections::HashMap;
+
+    fn booking(loan_type: &str, check_in: &str, check_out: Option<&str>) -> Booking {
+        Booking {
+            id: uuid::Uuid::nil(),
+            vehicle_id: "innova-1321".into(),
+            vehicle: "Innova DG 1321 WP".into(),
+            name: "Test".into(),
+            nomor_st: String::new(),
+            loan_time: "2026-10-15T08:00".into(),
+            notes: String::new(),
+            status: "booked".into(),
+            loan_type: Some(loan_type.into()),
+            created_at: "2026-10-15T00:00:00Z".into(),
+            check_in_time: Some(check_in.into()),
+            check_out_time: check_out.map(str::to_string),
+            return_name: None,
+            return_time: None,
+            fuel: None,
+            return_notes: None,
+            return_validation_error: None,
+        }
+    }
+
+    #[test]
+    fn booking_duration_uses_full_day_and_half_day_limits() {
+        let end = "2026-10-15T05:01:00Z";
+        let now = NaiveDate::parse_from_str("2026-10-15", "%Y-%m-%d")
+            .unwrap().and_hms_opt(5, 1, 0).unwrap();
+        assert!(!booking_timing(&booking("full_day", "2026-10-15T00:00:00Z", Some(end)), now).1);
+        assert!(booking_timing(&booking("half_day", "2026-10-15T00:00:00Z", Some(end)), now).1);
+    }
+
+    #[test]
+    fn spreadsheet_vehicle_count_matches_name_and_plate() {
+        let mut counts = HashMap::new();
+        counts.insert("Innova DG 1321 WP".to_string(), 3);
+        assert_eq!(spreadsheet_booking_count(&vehicles()[0], &counts), 3);
+    }
 
     #[test]
     fn parses_chat_amount_formats_and_keeps_description() {

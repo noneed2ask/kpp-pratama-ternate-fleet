@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: kpp-pratama-ternate-fleet
+    runtime: docker
+    plan: starter
+    region: singapore
+    numInstances: 1
+    healthCheckPath: /
+    disk:
+      name: fleet-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: GOOGLE_APPS_SCRIPT_URL
+        sync: false
+      - key: GOOGLE_SPREADSHEET_ID
+        sync: false
+      - key: FLEET_ADMIN_USERNAME
+        sync: false
+      - key: FLEET_ADMIN_PASSWORD
+        sync: false
+      - key: FLEET_USER_USERNAME
+        sync: false
+      - key: FLEET_USER_PASSWORD
+        sync: false
