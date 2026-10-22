@@ -586,15 +586,17 @@ async fn sheets_update_booking_check_time(booking: &Booking, check_in: bool) -> 
     sheets_request(payload).await.map(|_| ())
 }
 async fn state_response(State(state): State<SharedState>) -> Json<Value> {
-    let cached_counts = peek_sheets_booking_counts();
+    let mut cached_counts = peek_sheets_booking_counts();
     if cached_counts.as_ref().is_none_or(|(_, stale)| *stale)
         && env::var("GOOGLE_APPS_SCRIPT_URL").is_ok_and(|url| !url.trim().is_empty())
     {
-        tokio::spawn(async {
-            if let Err(error) = cached_sheets_booking_counts().await {
+        match cached_sheets_booking_counts().await {
+            Ok(Some(counts)) => cached_counts = Some((counts, false)),
+            Ok(None) => {}
+            Err(error) => {
                 eprintln!("Gagal memperbarui cache frekuensi spreadsheet: {error}");
             }
-        });
+        }
     }
     let mut app = state.lock().await;
     let mut response = match cached_counts {

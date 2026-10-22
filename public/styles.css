@@ -23,8 +23,6 @@ body.authenticated .login-screen { display: none; }
 .login-intro .eyebrow { color: #b9e6f4; }
 .login-intro h1 { max-width: 330px; margin-bottom: 13px; font-size: clamp(30px, 4vw, 40px); line-height: 1.12; letter-spacing: -.045em; }
 .login-intro > p:not(.eyebrow) { max-width: 340px; margin-bottom: 30px; color: rgba(255,255,255,.78); font-size: 14px; line-height: 1.7; }
-.login-points { display: flex; align-items: center; gap: 12px; margin-top: 12px; color: rgba(255,255,255,.9); font-size: 12px; }
-.login-points span { display: grid; width: 27px; height: 27px; place-items: center; border: 1px solid rgba(255,255,255,.32); border-radius: 9px; color: #d4f1fb; font-size: 10px; font-weight: 800; }
 .login-card { align-self: center; width: 100%; padding: 48px; }
 .login-card h2 { margin-bottom: 7px; font-size: 27px; }
 .login-card .subtitle { margin-bottom: 28px; line-height: 1.55; }
@@ -214,7 +212,6 @@ footer { padding: 17px 0 28px; border-top: 1px solid var(--line); color: #8b9aa4
   .login-intro .brand-icon { width: 45px; height: 45px; margin-bottom: 18px; border-radius: 14px; font-size: 22px; }
   .login-intro h1 { max-width: 350px; font-size: 27px; }
   .login-intro > p:not(.eyebrow) { margin-bottom: 12px; font-size: 13px; }
-  .login-points { display: none; }
   .login-card { padding: 28px 24px 25px; }
   .login-card h2 { font-size: 24px; }
   .admin-only { margin-top: 18px; padding: 16px 12px; border-radius: 16px; }
